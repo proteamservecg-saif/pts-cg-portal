@@ -6,6 +6,7 @@
 <title>Pro Team Serve</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='11' fill='%232f9e5b'/%3E%3Ctext x='32' y='41' font-family='Consolas,Menlo,monospace' font-size='19' font-weight='700' letter-spacing='-1' fill='%23ffffff' text-anchor='middle'%3EPTS%3C/text%3E%3C/svg%3E">
 <script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
 <style>
 /* ============================================================
    Pro Team Serve — Chhattisgarh Team Portal
@@ -333,6 +334,7 @@ function emptyDb() {
   return {
     districts: [], hospitals: [], hospitalContracts: {}, machines: [], machineDocuments: [],
     staff: [], scheduleEntries: [], announcements: [],
+    parts: [], consumptionLog: [],
     dismissedAlerts: [], homepageBanner: null
   };
 }
@@ -466,6 +468,23 @@ async function driveUploadBinary(file, parentId){
   return (await res.json()).id;
 }
 
+async function driveUploadBlob(blob, filename, mimeType, parentId){
+  const metadata = { name:filename, parents:[parentId] };
+  const boundary = '-------ptscg'+Date.now();
+  const arrayBuffer = await blob.arrayBuffer();
+  const base64Data = arrayBufferToBase64(arrayBuffer);
+  const body =
+    '--'+boundary+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+JSON.stringify(metadata)+'\r\n'+
+    '--'+boundary+'\r\nContent-Type: '+mimeType+'\r\nContent-Transfer-Encoding: base64\r\n\r\n'+base64Data+'\r\n'+
+    '--'+boundary+'--';
+  const res = await driveFetchAuthed(DRIVE_UPLOAD_URL+'?uploadType=multipart', {
+    method:'POST',
+    headers:{'Content-Type':'multipart/related; boundary='+boundary},
+    body
+  });
+  return (await res.json()).id;
+}
+
 function arrayBufferToBase64(buffer){
   const bytes = new Uint8Array(buffer);
   const CHUNK_SIZE = 0x8000;
@@ -508,12 +527,29 @@ async function loadDb(){
   DB.staff = DB.staff || [];
   DB.scheduleEntries = DB.scheduleEntries || [];
   DB.announcements = DB.announcements || [];
+  DB.parts = DB.parts || [];
+  DB.consumptionLog = DB.consumptionLog || [];
   DB.dismissedAlerts = DB.dismissedAlerts || [];
   DB.homepageBanner = DB.homepageBanner || null;
 }
 
 async function saveDb(){
-  await driveSaveJson(CONFIG.DB_FILE_ID, DB);
+  // Whole-file save with automatic retry: on a slow/flaky connection the write
+  // can succeed on Drive's side even though the confirmation response fails to
+  // come back cleanly. Retrying here (instead of at every call site) means a
+  // transient hiccup self-heals instead of surfacing as a false "it failed" error.
+  const maxAttempts = 3;
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++){
+    try {
+      await driveSaveJson(CONFIG.DB_FILE_ID, DB);
+      return;
+    } catch (e){
+      lastErr = e;
+      if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 500 * attempt));
+    }
+  }
+  throw new Error('Could not confirm the save after a few tries \u2014 check your connection. (If this was a delete or an edit, it may have actually gone through; refresh to check before retrying.)');
 }
 
 /* ============================================================
@@ -734,6 +770,7 @@ window.addEventListener('hashchange', renderRoute);
 
 function renderRoute(){
   if(!CONFIG.DB_FILE_ID){ renderSetupScreen(); return; }
+  if(!accessToken){ renderSignInGate(); return; }
   const hash = location.hash || '#/';
   const districtMatch = hash.match(/^#\/district\/(.+)$/);
   const hospitalMatch = hash.match(/^#\/hospital\/(.+)$/);
@@ -745,12 +782,33 @@ function renderRoute(){
   else if(hash === '#/team') renderTeamPage();
   else if(hash === '#/schedule') renderSchedulePage();
   else if(hash === '#/announcements') renderAnnouncementsPage();
+  else if(hash === '#/inventory') renderInventoryPage();
   else renderHomePage();
   const app = document.getElementById('app');
   app.classList.remove('page-enter');
   void app.offsetWidth;
   app.classList.add('page-enter');
   window.scrollTo(0, 0);
+}
+
+/* ============================================================
+   Sign-in gate (cosmetic privacy screen \u2014 banner + header only until signed in)
+   ============================================================ */
+function renderSignInGate(){
+  const app = document.getElementById('app');
+  const banner = DB && DB.homepageBanner;
+  app.innerHTML =
+    (banner
+      ? '<div class="homepage-banner" style="margin-bottom:36px;"><img src="'+driveViewUrl(banner.fileId)+'" alt=""></div>'
+      : '')
+    + '<div class="login-wrap" style="padding-top:10px;">'
+    + '<div class="login-card">'
+    + '<h1>Pro Team Serve</h1>'
+    + '<div class="page-subtitle" style="margin:6px 0 22px;">Chhattisgarh Team Portal &middot; sign in to continue.</div>'
+    + '<button class="btn btn-primary" id="gate-signin-btn" style="width:100%; padding:11px;">Sign in with Google</button>'
+    + '</div></div>';
+  const btn = document.getElementById('gate-signin-btn');
+  if(btn) btn.addEventListener('click', login);
 }
 
 /* ============================================================
@@ -865,6 +923,7 @@ function renderHomePage(){
   const teamCount = DB.staff.length;
   const scheduleCount = DB.scheduleEntries.length;
   const announcementCount = DB.announcements.length;
+  const partCount = DB.parts.length;
 
   const banner = DB.homepageBanner;
   const bannerHtml = banner
@@ -897,6 +956,10 @@ function renderHomePage(){
     + '<div class="station-card" data-module-link="#/announcements"><div class="station-tag">ANNOUNCEMENTS</div><h3>Announcements</h3>'
     + '<div class="station-meta"><span>'+announcementCount+' post'+(announcementCount===1?'':'s')+'</span></div>'
     + '<div class="station-card-footer"><a href="#/announcements" class="btn btn-station-open btn-sm">View announcements &rarr;</a></div></div>'
+
+    + '<div class="station-card" data-module-link="#/inventory"><div class="station-tag">INVENTORY MANAGEMENT</div><h3>Inventory Management</h3>'
+    + '<div class="station-meta"><span>'+partCount+' part'+(partCount===1?'':'s')+' catalogued</span></div>'
+    + '<div class="station-card-footer"><a href="#/inventory" class="btn btn-station-open btn-sm">Open inventory &rarr;</a></div></div>'
 
     + '</div>';
 
@@ -1658,6 +1721,7 @@ function renderSchedulePage(){
       return m ? (m.category+(m.model?': '+m.model:'')) : null;
     }).filter(Boolean).join(', ');
     const statusClass = (e.status||'').toLowerCase();
+    const partsCount = DB.consumptionLog.filter(c=>c.scheduleEntryId===e.id).length;
     return '<tr>'
       + '<td class="mono">'+formatDate(e.date)+'</td>'
       + '<td>'+(hospital ? '<a href="#/hospital/'+encodeURIComponent(hospital.id)+'">'+escapeHtml(hospital.name)+'</a>' : '<span class="muted">Unknown</span>')+'</td>'
@@ -1665,7 +1729,11 @@ function renderSchedulePage(){
       + '<td>'+escapeHtml(e.engineer||'\u2014')+'</td>'
       + '<td>'+escapeHtml(e.purpose||'\u2014')+'</td>'
       + '<td><span class="status-pill '+statusClass+'">'+escapeHtml(e.status||'Scheduled')+'</span></td>'
-      + (admin ? '<td class="row-actions"><button class="btn btn-outline btn-sm" data-edit-sched="'+e.id+'">Edit</button><button class="btn btn-danger btn-sm" data-delete-sched="'+e.id+'">Delete</button></td>' : '')
+      + '<td class="row-actions">'
+      + '<button class="btn btn-outline btn-sm" data-parts-sched="'+e.id+'">Parts'+(partsCount?' ('+partsCount+')':'')+'</button>'
+      + (e.report ? '<button class="btn btn-outline btn-sm" data-view-report="'+e.id+'">View Report</button>' : (admin ? '<button class="btn btn-outline btn-sm" data-generate-report="'+e.id+'">Generate Report</button>' : ''))
+      + (admin ? '<button class="btn btn-outline btn-sm" data-edit-sched="'+e.id+'">Edit</button><button class="btn btn-danger btn-sm" data-delete-sched="'+e.id+'">Delete</button>' : '')
+      + '</td>'
       + '</tr>';
   }).join('');
 
@@ -1678,12 +1746,15 @@ function renderSchedulePage(){
     + '</div>'
     + (entries.length===0
       ? '<div class="empty-state"><h3>No visits scheduled yet</h3><p>'+(admin?'Add the first visit above.':'')+'</p></div>'
-      : '<table class="data-table"><thead><tr><th>Date</th><th>Hospital</th><th>Machine(s)</th><th>Engineer</th><th>Purpose</th><th>Status</th>'+(admin?'<th></th>':'')+'</tr></thead><tbody>'+rows+'</tbody></table>');
+      : '<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Date</th><th>Hospital</th><th>Machine(s)</th><th>Engineer</th><th>Purpose</th><th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>');
 
   const addBtn = document.getElementById('add-sched-btn');
   if(addBtn) addBtn.addEventListener('click', ()=>openScheduleModal());
   document.querySelectorAll('[data-edit-sched]').forEach(btn=>btn.addEventListener('click',()=>openScheduleModal(btn.dataset.editSched)));
   document.querySelectorAll('[data-delete-sched]').forEach(btn=>btn.addEventListener('click',()=>deleteScheduleEntry(btn.dataset.deleteSched)));
+  document.querySelectorAll('[data-parts-sched]').forEach(btn=>btn.addEventListener('click',()=>openPartsUsedModal(btn.dataset.partsSched)));
+  document.querySelectorAll('[data-generate-report]').forEach(btn=>btn.addEventListener('click',()=>openGenerateReportModal(btn.dataset.generateReport)));
+  document.querySelectorAll('[data-view-report]').forEach(btn=>btn.addEventListener('click',()=>viewScheduleReport(btn.dataset.viewReport)));
 }
 
 function scheduleMachineOptionsHtml(hospitalId, selectedIds){
@@ -1697,22 +1768,38 @@ function scheduleMachineOptionsHtml(hospitalId, selectedIds){
   ).join('');
 }
 
+function scheduleHospitalOptionsHtml(districtId, selectedHospitalId){
+  const hospitals = DB.hospitals.filter(h=>!districtId || h.districtId===districtId).sort((a,b)=>a.name.localeCompare(b.name));
+  return '<option value="">Select hospital\u2026</option>'+hospitals.map(h=>'<option value="'+h.id+'"'+(selectedHospitalId===h.id?' selected':'')+'>'+escapeHtml(h.name)+'</option>').join('');
+}
+
 function openScheduleModal(id){
   const record = id ? DB.scheduleEntries.find(e=>e.id===id) : null;
-  const hospitals = [...DB.hospitals].sort((a,b)=>a.name.localeCompare(b.name));
-  const hospitalOptions = '<option value="">Select hospital\u2026</option>'+hospitals.map(h=>'<option value="'+h.id+'"'+(record&&record.hospitalId===h.id?' selected':'')+'>'+escapeHtml(h.name)+'</option>').join('');
+  const districts = [...DB.districts].sort((a,b)=>a.name.localeCompare(b.name));
+  const districtOptions = '<option value="">All districts</option>'+districts.map(d=>'<option value="'+d.id+'">'+escapeHtml(d.name)+'</option>').join('');
+  let prefillDistrictId = '';
+  if(record && record.hospitalId){
+    const h = DB.hospitals.find(x=>x.id===record.hospitalId);
+    if(h) prefillDistrictId = h.districtId;
+  }
 
   openModal(
     record ? 'Edit Visit' : 'Add Visit',
     '<div id="modal-form-error"></div>'
     + '<div class="field"><label>Date</label><input type="date" id="sched-date-input" value="'+(record?escapeHtml(record.date||''):'')+'"></div>'
-    + '<div class="field"><label>Hospital</label><select id="sched-hospital-input">'+hospitalOptions+'</select></div>'
+    + '<div class="field"><label>District</label><select id="sched-district-input">'+districtOptions+'</select></div>'
+    + '<div class="field"><label>Hospital</label><select id="sched-hospital-input">'+scheduleHospitalOptionsHtml(prefillDistrictId, record?record.hospitalId:null)+'</select></div>'
     + '<div class="field"><label>Machine(s)</label><div id="sched-machine-list">'+(record&&record.hospitalId ? scheduleMachineOptionsHtml(record.hospitalId, record.machineIds) : '<div class="helper-text">Select a hospital first.</div>')+'</div></div>'
     + '<div class="field"><label>Engineer assigned</label><input type="text" id="sched-engineer-input" value="'+(record?escapeHtml(record.engineer||''):'')+'"></div>'
     + '<div class="field"><label>Purpose</label><input type="text" id="sched-purpose-input" value="'+(record?escapeHtml(record.purpose||''):'')+'" placeholder="e.g. Preventive maintenance"></div>'
     + '<div class="field"><label>Status</label><select id="sched-status-input">'+SCHEDULE_STATUSES.map(s=>'<option value="'+s+'"'+(record&&record.status===s?' selected':(!record&&s==='Scheduled'?' selected':''))+'>'+s+'</option>').join('')+'</select></div>',
     '<button class="btn btn-outline" id="modal-cancel-btn">Cancel</button><button class="btn btn-primary" id="modal-save-btn">Save</button>'
   );
+  if(prefillDistrictId) document.getElementById('sched-district-input').value = prefillDistrictId;
+  document.getElementById('sched-district-input').addEventListener('change', (e)=>{
+    document.getElementById('sched-hospital-input').innerHTML = scheduleHospitalOptionsHtml(e.target.value, null);
+    document.getElementById('sched-machine-list').innerHTML = '<div class="helper-text">Select a hospital first.</div>';
+  });
   document.getElementById('sched-hospital-input').addEventListener('change', (e)=>{
     document.getElementById('sched-machine-list').innerHTML = scheduleMachineOptionsHtml(e.target.value, []);
   });
@@ -1744,12 +1831,67 @@ function openScheduleModal(id){
 
 async function deleteScheduleEntry(id){
   if(!confirm('Delete this schedule entry?')) return;
+  const entry = DB.scheduleEntries.find(e=>e.id===id);
   try {
     DB.scheduleEntries = DB.scheduleEntries.filter(e=>e.id!==id);
     await saveDb();
+    if(entry && entry.report && entry.report.fileId) driveDeleteFile(entry.report.fileId);
     toast('Visit deleted.', 'success');
     renderSchedulePage();
   } catch(e){ toast(e.message, 'error'); }
+}
+
+/* ---- Parts used on a visit ---- */
+function openPartsUsedModal(scheduleEntryId){
+  const entry = DB.scheduleEntries.find(e=>e.id===scheduleEntryId);
+  if(!entry) return;
+  const hospital = DB.hospitals.find(h=>h.id===entry.hospitalId);
+  const admin = isAdmin();
+  const linked = DB.consumptionLog.filter(c=>c.scheduleEntryId===scheduleEntryId);
+
+  const rows = linked.map(c=>{
+    const part = DB.parts.find(p=>p.id===c.partId);
+    return '<div class="drawing-card" style="padding:10px 14px;">'
+      + '<div style="display:flex; justify-content:space-between; align-items:center;">'
+      + '<div><div class="drawing-title" style="font-size:13.5px;">'+(part?escapeHtml(part.name):'Deleted part')+'</div>'
+      + '<div class="drawing-sub">'+(c.quantity||0)+' '+escapeHtml(part?part.unit||'':'')+(c.notes?(' \u00b7 '+escapeHtml(c.notes)):'')+'</div></div>'
+      + (admin ? '<button class="btn btn-danger btn-sm" data-delete-linked-consumption="'+c.id+'">Delete</button>' : '')
+      + '</div></div>';
+  }).join('');
+
+  openModal(
+    'Parts Used \u2014 '+(hospital?hospital.name:'Visit')+' \u00b7 '+formatDate(entry.date),
+    '<div id="parts-used-list" style="display:flex; flex-direction:column; gap:8px;">'
+    + (linked.length===0 ? '<div class="helper-text">No parts logged for this visit yet.</div>' : rows)
+    + '</div>',
+    (admin ? '<button class="btn btn-primary" id="log-part-for-visit-btn">+ Log Part Used</button>' : '')
+    + '<button class="btn btn-outline" id="modal-cancel-btn">Close</button>'
+  );
+  document.getElementById('modal-cancel-btn').addEventListener('click', closeModal);
+  const logBtn = document.getElementById('log-part-for-visit-btn');
+  if(logBtn) logBtn.addEventListener('click', ()=>{
+    closeModal();
+    openLogConsumptionModal({ hospitalId: entry.hospitalId, scheduleEntryId: entry.id });
+  });
+  document.querySelectorAll('[data-delete-linked-consumption]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      if(!confirm('Delete this logged part? The quantity will be added back to stock.')) return;
+      const cid = btn.dataset.deleteLinkedConsumption;
+      const cEntry = DB.consumptionLog.find(c=>c.id===cid);
+      try {
+        DB.consumptionLog = DB.consumptionLog.filter(c=>c.id!==cid);
+        if(cEntry){
+          const part = DB.parts.find(p=>p.id===cEntry.partId);
+          if(part) part.stockQty = Number(part.stockQty || 0) + Number(cEntry.quantity || 0);
+        }
+        await saveDb();
+        toast('Entry deleted, stock restored.', 'success');
+        closeModal();
+        openPartsUsedModal(scheduleEntryId);
+        renderSchedulePage();
+      } catch(e){ toast(e.message, 'error'); }
+    });
+  });
 }
 
 /* ============================================================
@@ -1851,6 +1993,421 @@ async function deleteAnnouncement(id){
     renderAnnouncementsPage();
   } catch(e){ toast(e.message, 'error'); }
 }
+
+/* ---- Service report (PDF, one per visit) ---- */
+function loadImageAsDataUrl(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      const img = new Image();
+      img.onload = ()=> resolve({ dataUrl: reader.result, width: img.naturalWidth, height: img.naturalHeight, type: file.type.includes('png') ? 'PNG' : 'JPEG' });
+      img.onerror = ()=> reject(new Error('Could not read image: '+file.name));
+      img.src = reader.result;
+    };
+    reader.onerror = ()=> reject(new Error('Could not read file: '+file.name));
+    reader.readAsDataURL(file);
+  });
+}
+
+function openGenerateReportModal(scheduleEntryId){
+  const entry = DB.scheduleEntries.find(e=>e.id===scheduleEntryId);
+  if(!entry) return;
+  const hospital = DB.hospitals.find(h=>h.id===entry.hospitalId);
+  openModal(
+    'Generate Service Report',
+    '<div id="modal-form-error"></div>'
+    + '<div class="helper-text">'+escapeHtml(hospital?hospital.name:'')+' &middot; '+formatDate(entry.date)+' &middot; '+escapeHtml(entry.engineer||'No engineer set')+'</div>'
+    + '<div class="field"><label>Work performed / findings</label><textarea id="report-findings-input" style="min-height:110px;" placeholder="Describe the work carried out, observations, and any recommendations\u2026"></textarea></div>'
+    + '<div class="field"><label>Photos (optional \u2014 JPG, JPEG, PNG, multiple allowed)</label><input type="file" id="report-photos-input" accept=".jpg,.jpeg,.png" multiple></div>'
+    + '<div class="helper-text">Engineer, hospital, machines serviced, and parts consumed for this visit are pulled in automatically.</div>',
+    '<button class="btn btn-outline" id="modal-cancel-btn">Cancel</button><button class="btn btn-primary" id="modal-save-btn">Generate PDF</button>'
+  );
+  document.getElementById('modal-cancel-btn').addEventListener('click', closeModal);
+  document.getElementById('modal-save-btn').addEventListener('click', async ()=>{
+    const findings = document.getElementById('report-findings-input').value.trim();
+    const errBox = document.getElementById('modal-form-error');
+    const saveBtn = document.getElementById('modal-save-btn');
+    saveBtn.disabled = true; saveBtn.textContent = 'Generating\u2026';
+    try {
+      if(!window.jspdf || !window.jspdf.jsPDF) throw new Error('PDF library is still loading \u2014 please wait a moment and try again.');
+      const photoInput = document.getElementById('report-photos-input');
+      const images = [];
+      for(const file of Array.from(photoInput.files || [])){
+        images.push(await loadImageAsDataUrl(file));
+      }
+      const pdfBlob = buildServiceReportPdf(entry, hospital, findings, images);
+      const filename = 'Service_Report_'+(hospital?hospital.name.replace(/[^\w\-]+/g,'_'):'visit')+'_'+entry.date+'.pdf';
+      const fileId = await driveUploadBlob(pdfBlob, filename, 'application/pdf', CONFIG.UPLOADS_FOLDER_ID);
+      await driveSetPublicReadable(fileId);
+      entry.report = { fileId, originalName: filename, findings, generatedAt: new Date().toISOString(), generatedBy: currentUserEmail||'admin' };
+      await saveDb();
+      closeModal();
+      toast('Service report generated.', 'success');
+      renderSchedulePage();
+    } catch(e){ errBox.innerHTML = '<div class="form-error">'+escapeHtml(e.message)+'</div>'; saveBtn.disabled=false; saveBtn.textContent='Generate PDF'; }
+  });
+}
+
+function buildServiceReportPdf(entry, hospital, findings, images){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'mm', format:'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 16;
+  let y = margin;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(16);
+  doc.text('Pro Team Serve \u2014 Service Report', margin, y); y += 6;
+  doc.setDrawColor(47,158,91); doc.setLineWidth(0.6);
+  doc.line(margin, y, pageWidth-margin, y); y += 8;
+
+  doc.setFont('helvetica','normal'); doc.setFontSize(10.5);
+  const district = hospital ? DB.districts.find(d=>d.id===hospital.districtId) : null;
+  const infoLines = [
+    ['Hospital', hospital ? hospital.name : 'Unknown'],
+    ['District', district ? district.name : ''],
+    ['Visit Date', formatDateDMY(entry.date)],
+    ['Engineer', entry.engineer || ''],
+    ['Purpose', entry.purpose || ''],
+    ['Status', entry.status || '']
+  ];
+  infoLines.forEach(([label, val])=>{
+    doc.setFont('helvetica','bold'); doc.text(label+':', margin, y);
+    doc.setFont('helvetica','normal'); doc.text(String(val||'\u2014'), margin+32, y);
+    y += 6;
+  });
+  y += 2;
+
+  const machines = (entry.machineIds||[]).map(id=>DB.machines.find(m=>m.id===id)).filter(Boolean);
+  doc.setFont('helvetica','bold'); doc.setFontSize(11.5); doc.text('Machines Serviced', margin, y); y += 6;
+  doc.setFont('helvetica','normal'); doc.setFontSize(10);
+  if(machines.length===0){ doc.text('None recorded.', margin, y); y += 6; }
+  else machines.forEach(m=>{
+    doc.text('\u2022 '+(m.category||'')+(m.model?(' \u2014 '+m.model):'')+(m.serialNo?(' (S/N '+m.serialNo+')'):''), margin, y);
+    y += 5.5;
+  });
+  y += 3;
+
+  const parts = DB.consumptionLog.filter(c=>c.scheduleEntryId===entry.id);
+  doc.setFont('helvetica','bold'); doc.setFontSize(11.5); doc.text('Parts Consumed', margin, y); y += 6;
+  doc.setFont('helvetica','normal'); doc.setFontSize(10);
+  if(parts.length===0){ doc.text('None logged.', margin, y); y += 6; }
+  else parts.forEach(c=>{
+    const part = DB.parts.find(p=>p.id===c.partId);
+    doc.text('\u2022 '+(part?part.name:'Deleted part')+' \u2014 '+(c.quantity||0)+' '+(part?part.unit||'':''), margin, y);
+    y += 5.5;
+  });
+  y += 3;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(11.5); doc.text('Work Performed / Findings', margin, y); y += 6;
+  doc.setFont('helvetica','normal'); doc.setFontSize(10);
+  const findingsLines = doc.splitTextToSize(findings || 'No notes recorded.', pageWidth - margin*2);
+  findingsLines.forEach(line=>{
+    if(y > pageHeight - margin){ doc.addPage(); y = margin; }
+    doc.text(line, margin, y); y += 5.5;
+  });
+
+  images.forEach(img=>{
+    doc.addPage(); y = margin;
+    doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.text('Photo', margin, y); y += 6;
+    const maxW = pageWidth - margin*2;
+    const maxH = pageHeight - y - margin;
+    let w = maxW, h = (img.height/img.width) * w;
+    if(h > maxH){ h = maxH; w = (img.width/img.height) * h; }
+    doc.addImage(img.dataUrl, img.type, margin, y, w, h);
+  });
+
+  return doc.output('blob');
+}
+
+function viewScheduleReport(scheduleEntryId){
+  const entry = DB.scheduleEntries.find(e=>e.id===scheduleEntryId);
+  if(!entry || !entry.report) return;
+  openPreviewModal({ kind:'drive-pdf', previewUrl: drivePdfPreviewUrl(entry.report.fileId), title: entry.report.originalName });
+  if(isAdmin()){
+    setTimeout(()=>{
+      const body = document.getElementById('preview-body');
+      if(!body) return;
+      const bar = document.createElement('div');
+      bar.style.cssText = 'position:absolute; bottom:14px; right:14px; display:flex; gap:8px;';
+      bar.innerHTML = '<a class="btn btn-outline btn-sm" href="'+driveDownloadUrl(entry.report.fileId)+'" target="_blank" rel="noopener">Download</a>'
+        + '<button class="btn btn-danger btn-sm" id="regen-report-btn">Regenerate</button>';
+      body.parentElement.style.position = 'relative';
+      body.parentElement.appendChild(bar);
+      document.getElementById('regen-report-btn').addEventListener('click', async ()=>{
+        if(!confirm('Delete the current report and generate a new one?')) return;
+        const oldFileId = entry.report.fileId;
+        entry.report = null;
+        try {
+          await saveDb();
+          if(oldFileId) driveDeleteFile(oldFileId);
+          closePreviewModal();
+          openGenerateReportModal(scheduleEntryId);
+        } catch(e){ toast(e.message, 'error'); }
+      });
+    }, 50);
+  }
+}
+
+/* ============================================================
+   INVENTORY MANAGEMENT — Stock Overview + Consumption Log
+   ============================================================ */
+function renderInventoryPage(){
+  const app = document.getElementById('app');
+  app.innerHTML =
+    '<div class="breadcrumb"><a href="#/">Home</a><span class="sep">/</span><span class="current">Inventory Management</span></div>'
+    + '<div class="page-eyebrow">Pro Team Serve</div>'
+    + '<div class="page-header"><div><h1>Inventory Management</h1>'
+    + '<div class="page-subtitle">Spares catalog, current stock, and consumption during service visits.</div></div></div>'
+    + '<div class="tabs">'
+    + '<button class="tab-btn active" data-tab-target="inv-stock">Stock Overview</button>'
+    + '<button class="tab-btn" data-tab-target="inv-consumption">Consumption Log</button>'
+    + '</div>'
+    + '<div class="tab-panel active" id="panel-inv-stock"></div>'
+    + '<div class="tab-panel" id="panel-inv-consumption"></div>';
+
+  document.querySelectorAll('.tab-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+      document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('panel-'+btn.dataset.tabTarget).classList.add('active');
+    });
+  });
+
+  renderStockOverviewTab();
+  renderConsumptionLogTab();
+}
+
+/* ---- Stock Overview ---- */
+function renderStockOverviewTab(){
+  const panel = document.getElementById('panel-inv-stock');
+  if(!panel) return;
+  const admin = isAdmin();
+  const parts = [...DB.parts].sort((a,b)=>a.name.localeCompare(b.name));
+
+  const rows = parts.map(p=>{
+    const qty = Number(p.stockQty || 0);
+    const qtyClass = qty <= 0 ? 'style="color:var(--color-danger); font-weight:700;"' : '';
+    return '<tr>'
+      + '<td>'+escapeHtml(p.name)+'</td>'
+      + '<td class="mono">'+escapeHtml(p.partNumber||'\u2014')+'</td>'
+      + '<td>'+escapeHtml(p.unit||'\u2014')+'</td>'
+      + '<td class="mono" '+qtyClass+'>'+qty+'</td>'
+      + (admin ? '<td class="row-actions">'
+          + '<button class="btn btn-primary btn-sm" data-add-stock="'+p.id+'">+ Add Stock</button>'
+          + '<button class="btn btn-outline btn-sm" data-edit-part="'+p.id+'">Edit</button>'
+          + '<button class="btn btn-danger btn-sm" data-delete-part="'+p.id+'">Delete</button>'
+          + '</td>' : '')
+      + '</tr>';
+  }).join('');
+
+  panel.innerHTML =
+    '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">'
+    + '<div class="page-subtitle" style="margin:0;">Spares catalog with current stock quantity.</div>'
+    + (admin ? '<button class="btn btn-primary btn-sm" id="add-part-btn">+ Add Part</button>' : '')
+    + '</div>'
+    + (parts.length===0
+      ? '<div class="empty-state"><h3>No parts catalogued yet</h3><p>'+(admin?'Add your first spare part above.':'')+'</p></div>'
+      : '<table class="data-table"><thead><tr><th>Part Name</th><th>Part Number</th><th>Unit</th><th>Stock Qty</th>'+(admin?'<th></th>':'')+'</tr></thead><tbody>'+rows+'</tbody></table>');
+
+  const addBtn = document.getElementById('add-part-btn');
+  if(addBtn) addBtn.addEventListener('click', ()=>openPartModal());
+  panel.querySelectorAll('[data-edit-part]').forEach(btn=>btn.addEventListener('click',()=>openPartModal(btn.dataset.editPart)));
+  panel.querySelectorAll('[data-delete-part]').forEach(btn=>btn.addEventListener('click',()=>deletePart(btn.dataset.deletePart)));
+  panel.querySelectorAll('[data-add-stock]').forEach(btn=>btn.addEventListener('click',()=>openAddStockModal(btn.dataset.addStock)));
+}
+
+function openPartModal(id){
+  const record = id ? DB.parts.find(p=>p.id===id) : null;
+  openModal(
+    record ? 'Edit Part' : 'Add Part',
+    '<div id="modal-form-error"></div>'
+    + '<div class="field"><label>Part name</label><input type="text" id="part-name-input" value="'+(record?escapeHtml(record.name):'')+'" placeholder="e.g. ECG Electrode Pads"></div>'
+    + '<div class="field-row"><div class="field"><label>Part number</label><input type="text" id="part-number-input" value="'+(record?escapeHtml(record.partNumber||''):'')+'"></div>'
+    + '<div class="field"><label>Unit</label><input type="text" id="part-unit-input" value="'+(record?escapeHtml(record.unit||''):'')+'" placeholder="e.g. pcs, box, meter"></div></div>'
+    + (record ? '' : '<div class="field"><label>Initial stock quantity</label><input type="number" id="part-stock-input" value="0" min="0"></div>'),
+    '<button class="btn btn-outline" id="modal-cancel-btn">Cancel</button><button class="btn btn-primary" id="modal-save-btn">Save</button>'
+  );
+  document.getElementById('modal-cancel-btn').addEventListener('click', closeModal);
+  document.getElementById('modal-save-btn').addEventListener('click', async ()=>{
+    const name = document.getElementById('part-name-input').value.trim();
+    const errBox = document.getElementById('modal-form-error');
+    if(!name){ errBox.innerHTML = '<div class="form-error">Please enter a part name.</div>'; return; }
+    const saveBtn = document.getElementById('modal-save-btn');
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving\u2026';
+    try {
+      const partNumber = document.getElementById('part-number-input').value.trim();
+      const unit = document.getElementById('part-unit-input').value.trim();
+      if(record){
+        record.name = name; record.partNumber = partNumber; record.unit = unit;
+      } else {
+        const stockInput = document.getElementById('part-stock-input');
+        const stockQty = stockInput ? (parseInt(stockInput.value, 10) || 0) : 0;
+        DB.parts.push({ id: nextId('part'), name, partNumber, unit, stockQty, createdAt: new Date().toISOString() });
+      }
+      await saveDb();
+      closeModal();
+      toast(record ? 'Part updated.' : 'Part added.', 'success');
+      renderStockOverviewTab();
+    } catch(e){ errBox.innerHTML = '<div class="form-error">'+escapeHtml(e.message)+'</div>'; saveBtn.disabled=false; saveBtn.textContent='Save'; }
+  });
+}
+
+async function deletePart(id){
+  const inUse = DB.consumptionLog.some(c=>c.partId===id);
+  if(inUse){ toast('This part has consumption history and cannot be deleted. You can still edit it.', 'error'); return; }
+  if(!confirm('Delete this part from the catalog?')) return;
+  try {
+    DB.parts = DB.parts.filter(p=>p.id!==id);
+    await saveDb();
+    toast('Part deleted.', 'success');
+    renderStockOverviewTab();
+  } catch(e){ toast(e.message, 'error'); }
+}
+
+function openAddStockModal(partId){
+  const part = DB.parts.find(p=>p.id===partId);
+  if(!part) return;
+  openModal(
+    'Add Stock \u2014 '+part.name,
+    '<div id="modal-form-error"></div>'
+    + '<div class="helper-text">Current stock: <strong>'+Number(part.stockQty||0)+' '+escapeHtml(part.unit||'')+'</strong></div>'
+    + '<div class="field"><label>Quantity to add</label><input type="number" id="add-stock-qty-input" min="1" value="1"></div>'
+    + '<div class="field"><label>Note (optional)</label><input type="text" id="add-stock-note-input" placeholder="e.g. received from supplier"></div>',
+    '<button class="btn btn-outline" id="modal-cancel-btn">Cancel</button><button class="btn btn-primary" id="modal-save-btn">Add Stock</button>'
+  );
+  document.getElementById('modal-cancel-btn').addEventListener('click', closeModal);
+  document.getElementById('modal-save-btn').addEventListener('click', async ()=>{
+    const qty = parseInt(document.getElementById('add-stock-qty-input').value, 10);
+    const errBox = document.getElementById('modal-form-error');
+    if(!qty || qty <= 0){ errBox.innerHTML = '<div class="form-error">Please enter a quantity greater than 0.</div>'; return; }
+    const saveBtn = document.getElementById('modal-save-btn');
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving\u2026';
+    try {
+      part.stockQty = Number(part.stockQty || 0) + qty;
+      await saveDb();
+      closeModal();
+      toast('Stock updated.', 'success');
+      renderStockOverviewTab();
+    } catch(e){ errBox.innerHTML = '<div class="form-error">'+escapeHtml(e.message)+'</div>'; saveBtn.disabled=false; saveBtn.textContent='Add Stock'; }
+  });
+}
+
+/* ---- Consumption Log ---- */
+function renderConsumptionLogTab(){
+  const panel = document.getElementById('panel-inv-consumption');
+  if(!panel) return;
+  const admin = isAdmin();
+  const entries = [...DB.consumptionLog].sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+
+  const rows = entries.map(c=>{
+    const part = DB.parts.find(p=>p.id===c.partId);
+    const hospital = DB.hospitals.find(h=>h.id===c.hospitalId);
+    return '<tr>'
+      + '<td class="mono">'+formatDate(c.date)+'</td>'
+      + '<td>'+(part?escapeHtml(part.name):'<span class="muted">Deleted part</span>')+'</td>'
+      + '<td class="mono">'+(c.quantity||0)+' '+escapeHtml(part?part.unit||'':'')+'</td>'
+      + '<td>'+(hospital ? '<a href="#/hospital/'+encodeURIComponent(hospital.id)+'">'+escapeHtml(hospital.name)+'</a>' : '<span class="muted">\u2014</span>')+'</td>'
+      + '<td>'+(c.scheduleEntryId ? '<span class="status-pill scheduled">Linked to visit</span>' : '<span class="muted">Standalone</span>')+'</td>'
+      + '<td>'+escapeHtml(c.notes||'\u2014')+'</td>'
+      + (admin ? '<td class="row-actions"><button class="btn btn-danger btn-sm" data-delete-consumption="'+c.id+'">Delete</button></td>' : '')
+      + '</tr>';
+  }).join('');
+
+  panel.innerHTML =
+    '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">'
+    + '<div class="page-subtitle" style="margin:0;">Every logged use of a spare part, most recent first.</div>'
+    + (admin ? '<button class="btn btn-primary btn-sm" id="log-consumption-btn">+ Log Consumption</button>' : '')
+    + '</div>'
+    + (entries.length===0
+      ? '<div class="empty-state"><h3>No consumption logged yet</h3><p>'+(admin?'Log the first spare part usage above.':'')+'</p></div>'
+      : '<table class="data-table"><thead><tr><th>Date</th><th>Part</th><th>Qty</th><th>Hospital</th><th>Visit</th><th>Notes</th>'+(admin?'<th></th>':'')+'</tr></thead><tbody>'+rows+'</tbody></table>');
+
+  const logBtn = document.getElementById('log-consumption-btn');
+  if(logBtn) logBtn.addEventListener('click', ()=>openLogConsumptionModal());
+  panel.querySelectorAll('[data-delete-consumption]').forEach(btn=>btn.addEventListener('click',()=>deleteConsumptionEntry(btn.dataset.deleteConsumption)));
+}
+
+function consumptionHospitalOptionsHtml(districtId, selectedHospitalId){
+  const hospitals = DB.hospitals.filter(h=>!districtId || h.districtId===districtId).sort((a,b)=>a.name.localeCompare(b.name));
+  return '<option value="">Select hospital\u2026</option>'+hospitals.map(h=>'<option value="'+h.id+'"'+(selectedHospitalId===h.id?' selected':'')+'>'+escapeHtml(h.name)+'</option>').join('');
+}
+
+function openLogConsumptionModal(prefill){
+  prefill = prefill || {};
+  if(DB.parts.length===0){ toast('Add at least one part to the catalog first.', 'error'); return; }
+  const districts = [...DB.districts].sort((a,b)=>a.name.localeCompare(b.name));
+  const districtOptions = '<option value="">All districts</option>'+districts.map(d=>'<option value="'+d.id+'">'+escapeHtml(d.name)+'</option>').join('');
+  const parts = [...DB.parts].sort((a,b)=>a.name.localeCompare(b.name));
+  const partOptions = '<option value="">Select part\u2026</option>'+parts.map(p=>'<option value="'+p.id+'">'+escapeHtml(p.name)+(p.partNumber?' ('+escapeHtml(p.partNumber)+')':'')+' \u2014 stock: '+Number(p.stockQty||0)+'</option>').join('');
+
+  let prefillDistrictId = '';
+  if(prefill.hospitalId){
+    const h = DB.hospitals.find(x=>x.id===prefill.hospitalId);
+    if(h) prefillDistrictId = h.districtId;
+  }
+
+  openModal(
+    'Log Consumption',
+    '<div id="modal-form-error"></div>'
+    + '<div class="field"><label>Part used</label><select id="cons-part-input">'+partOptions+'</select></div>'
+    + '<div class="field"><label>Quantity</label><input type="number" id="cons-qty-input" min="1" value="1"></div>'
+    + '<div class="field"><label>District</label><select id="cons-district-input">'+districtOptions+'</select></div>'
+    + '<div class="field"><label>Hospital</label><select id="cons-hospital-input">'+consumptionHospitalOptionsHtml(prefillDistrictId, prefill.hospitalId)+'</select></div>'
+    + '<div class="field"><label>Date</label><input type="date" id="cons-date-input" value="'+new Date().toISOString().slice(0,10)+'"></div>'
+    + '<div class="field"><label>Notes (optional)</label><input type="text" id="cons-notes-input"></div>',
+    '<button class="btn btn-outline" id="modal-cancel-btn">Cancel</button><button class="btn btn-primary" id="modal-save-btn">Log</button>'
+  );
+  if(prefillDistrictId) document.getElementById('cons-district-input').value = prefillDistrictId;
+  document.getElementById('cons-district-input').addEventListener('change', (e)=>{
+    document.getElementById('cons-hospital-input').innerHTML = consumptionHospitalOptionsHtml(e.target.value, null);
+  });
+  document.getElementById('modal-cancel-btn').addEventListener('click', closeModal);
+  document.getElementById('modal-save-btn').addEventListener('click', async ()=>{
+    const partId = document.getElementById('cons-part-input').value;
+    const qty = parseInt(document.getElementById('cons-qty-input').value, 10);
+    const hospitalId = document.getElementById('cons-hospital-input').value;
+    const date = document.getElementById('cons-date-input').value;
+    const errBox = document.getElementById('modal-form-error');
+    if(!partId || !qty || qty<=0 || !hospitalId || !date){ errBox.innerHTML = '<div class="form-error">Please fill in part, quantity, hospital, and date.</div>'; return; }
+    const saveBtn = document.getElementById('modal-save-btn');
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving\u2026';
+    try {
+      const part = DB.parts.find(p=>p.id===partId);
+      const entry = {
+        id: nextId('cons'), partId, quantity: qty, hospitalId,
+        scheduleEntryId: prefill.scheduleEntryId || null,
+        date, notes: document.getElementById('cons-notes-input').value,
+        loggedBy: currentUserEmail||'admin', createdAt: new Date().toISOString()
+      };
+      DB.consumptionLog.push(entry);
+      if(part) part.stockQty = Number(part.stockQty || 0) - qty;
+      await saveDb();
+      closeModal();
+      toast('Consumption logged.', 'success');
+      if(location.hash === '#/inventory'){ renderStockOverviewTab(); renderConsumptionLogTab(); }
+      else renderRoute();
+    } catch(e){ errBox.innerHTML = '<div class="form-error">'+escapeHtml(e.message)+'</div>'; saveBtn.disabled=false; saveBtn.textContent='Log'; }
+  });
+}
+
+async function deleteConsumptionEntry(id){
+  if(!confirm('Delete this consumption entry? The quantity will be added back to stock.')) return;
+  const entry = DB.consumptionLog.find(c=>c.id===id);
+  try {
+    DB.consumptionLog = DB.consumptionLog.filter(c=>c.id!==id);
+    if(entry){
+      const part = DB.parts.find(p=>p.id===entry.partId);
+      if(part) part.stockQty = Number(part.stockQty || 0) + Number(entry.quantity || 0);
+    }
+    await saveDb();
+    toast('Entry deleted, stock restored.', 'success');
+    if(location.hash === '#/inventory'){ renderStockOverviewTab(); renderConsumptionLogTab(); }
+    else renderRoute();
+  } catch(e){ toast(e.message, 'error'); }
+}
+
 
 /* ============================================================
    FIRST-RUN SETUP SCREEN (shown until CONFIG.DB_FILE_ID is set)
