@@ -50,6 +50,19 @@ button { font-family:inherit; cursor:pointer; }
 .topbar-title .line1 { font-size:12.5px; letter-spacing:.08em; color:#54697d; text-transform:uppercase; font-weight:600; }
 .topbar-title .line2 { font-size:18.5px; font-weight:700; font-family:var(--font-display); color:var(--color-panel); }
 .topbar-actions { display:flex; align-items:center; gap:14px; font-size:13.5px; }
+.search-wrap { position:relative; }
+.btn-icon { background:transparent; border:1.5px solid rgba(20,38,31,.3); color:var(--color-panel); width:34px; height:34px; border-radius:50%; display:flex; align-items:center; justify-content:center; transition:background .15s ease, border-color .15s ease, color .15s ease; flex-shrink:0; }
+.btn-icon:hover { background:var(--color-accent); border-color:var(--color-accent); color:#fff; }
+.search-panel { position:absolute; top:44px; right:0; background:var(--color-surface); border:1.5px solid var(--color-border); border-radius:var(--radius-card); box-shadow:0 14px 34px rgba(10,23,18,.2); width:380px; max-width:88vw; padding:10px; z-index:60; animation:modal-pop-in .18s cubic-bezier(.22,1,.36,1); }
+.search-panel input { width:100%; font-family:inherit; font-size:14px; padding:9px 12px; border:1px solid var(--color-border-strong); border-radius:var(--radius); background:#fbfcfd; }
+.search-panel input:focus-visible { outline:2px solid var(--color-accent); outline-offset:1px; }
+.search-results { margin-top:8px; max-height:380px; overflow-y:auto; display:flex; flex-direction:column; gap:1px; }
+.search-result-group-label { font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--color-text-muted); font-weight:700; padding:8px 8px 4px; }
+.search-result-item { display:block; padding:8px 10px; border-radius:7px; cursor:pointer; transition:background .12s ease; }
+.search-result-item:hover { background:#eef8f1; }
+.search-result-title { font-size:13.5px; font-weight:600; color:var(--color-text); }
+.search-result-sub { font-size:11.5px; color:var(--color-text-muted); margin-top:1px; }
+.search-empty { padding:16px 8px; text-align:center; color:var(--color-text-muted); font-size:13px; }
 .admin-pill { display:flex; align-items:center; gap:8px; background:rgba(20,38,31,.08); color:var(--color-panel); padding:6px 12px; border-radius:20px; font-weight:600; }
 .status-dot { width:8px; height:8px; border-radius:50%; background:var(--color-accent); box-shadow:0 0 0 3px rgba(47,158,91,.25); }
 
@@ -87,8 +100,13 @@ button { font-family:inherit; cursor:pointer; }
 .safety-banner svg { flex-shrink:0; color:var(--color-accent-dark); }
 .safety-banner strong { color:var(--color-text); font-weight:700; }
 
-.alert-stack { display:flex; flex-direction:column; gap:10px; margin-bottom:26px; }
-.alert-item { display:flex; align-items:flex-start; gap:12px; background:#fff5f4; border:1px solid #f3c6c2; border-left:4px solid var(--color-danger); border-radius:var(--radius-card); padding:14px 18px; box-shadow:var(--shadow-card); }
+.alert-carousel { display:flex; align-items:center; gap:10px; margin-bottom:26px; }
+.alert-carousel-viewport { flex:1; min-width:0; overflow:hidden; }
+.alert-nav-btn { flex-shrink:0; width:34px; height:34px; border-radius:50%; background:var(--color-surface); border:1.5px solid var(--color-border-strong); color:var(--color-panel); display:flex; align-items:center; justify-content:center; transition:background .15s ease, border-color .15s ease, transform .15s ease; }
+.alert-nav-btn:hover { background:var(--color-accent); border-color:var(--color-accent); color:#fff; transform:scale(1.08); }
+.alert-nav-btn:active { transform:scale(.94); }
+.alert-carousel-counter { flex-shrink:0; font-family:var(--font-mono); font-size:11.5px; color:var(--color-text-muted); min-width:40px; text-align:center; }
+.alert-item { display:flex; align-items:flex-start; gap:12px; background:#fff5f4; border:1px solid #f3c6c2; border-left:4px solid var(--color-danger); border-radius:var(--radius-card); padding:14px 18px; box-shadow:var(--shadow-card); animation:panel-fade-in .22s ease; }
 .alert-item svg { flex-shrink:0; color:var(--color-danger); margin-top:1px; }
 .alert-item-body { flex:1; min-width:0; }
 .alert-item-title { font-weight:700; font-size:13.5px; color:var(--color-danger); margin-bottom:2px; }
@@ -247,6 +265,8 @@ footer.site-footer { background:linear-gradient(180deg,var(--color-panel) 0%,var
   .topbar-title .line1{font-size:11px;} .topbar-title .line2{font-size:15px;}
   .field-row{flex-direction:column;} .spec-cell{border-right:none;}
   .station-grid{grid-template-columns:1fr;}
+  .search-panel{position:fixed; top:66px; left:10px; right:10px; width:auto; max-width:none;}
+  .alert-carousel{gap:6px;} .alert-nav-btn{width:30px; height:30px;}
 }
 @media (hover:none){
   .station-card:hover,.equipment-row:hover,.drawing-card:hover{transform:none;box-shadow:var(--shadow-card);border-color:var(--color-border);background:var(--color-surface);}
@@ -554,6 +574,12 @@ function renderTopbar(){
     + '<div class="topbar-title"><span class="line1">Chhattisgarh Team Portal</span><span class="line2">Pro Team Serve</span></div>'
     + '</a>'
     + '<div class="topbar-actions">'
+    + '<div class="search-wrap" id="search-wrap">'
+    + '<button class="btn-icon" id="search-toggle-btn" aria-label="Search hospitals and machines"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>'
+    + '<div class="search-panel" id="search-panel" style="display:none;">'
+    + '<input type="text" id="global-search-input" placeholder="Search hospitals, address, machine model or serial\u2026" autocomplete="off">'
+    + '<div class="search-results" id="search-results"></div>'
+    + '</div></div>'
     + (isAdmin()
         ? '<div class="admin-pill"><span class="status-dot"></span><span>Admin: '+escapeHtml(currentUserEmail||'')+'</span></div><button class="btn btn-topbar" id="logout-btn">Log out</button>'
         : '<button class="btn btn-topbar" id="login-btn">Sign in</button>')
@@ -563,7 +589,93 @@ function renderTopbar(){
   if(loginBtn) loginBtn.addEventListener('click', login);
   const logoutBtn = document.getElementById('logout-btn');
   if(logoutBtn) logoutBtn.addEventListener('click', logout);
+
+  const searchToggleBtn = document.getElementById('search-toggle-btn');
+  if(searchToggleBtn) searchToggleBtn.addEventListener('click', (e)=>{
+    e.stopPropagation();
+    const panel = document.getElementById('search-panel');
+    if(panel.style.display === 'block') closeSearchPanel(); else openSearchPanel();
+  });
+  const searchInput = document.getElementById('global-search-input');
+  if(searchInput){
+    searchInput.addEventListener('input', (e)=> renderSearchResults(e.target.value));
+    searchInput.addEventListener('click', (e)=> e.stopPropagation());
+  }
+  const searchPanel = document.getElementById('search-panel');
+  if(searchPanel) searchPanel.addEventListener('click', (e)=> e.stopPropagation());
 }
+
+/* ============================================================
+   Global search (hospitals: name + address, machines: model + serial)
+   ============================================================ */
+function openSearchPanel(){
+  const panel = document.getElementById('search-panel');
+  if(!panel) return;
+  panel.style.display = 'block';
+  const input = document.getElementById('global-search-input');
+  if(input){ input.value = ''; setTimeout(()=>input.focus(), 30); }
+  renderSearchResults('');
+}
+function closeSearchPanel(){
+  const panel = document.getElementById('search-panel');
+  if(panel) panel.style.display = 'none';
+}
+function searchRecords(query){
+  const q = query.trim().toLowerCase();
+  if(q.length < 2) return { hospitals: [], machines: [] };
+  const hospitals = (DB.hospitals||[]).filter(h=>
+    (h.name||'').toLowerCase().includes(q) || (h.address||'').toLowerCase().includes(q)
+  ).slice(0, 6);
+  const machines = (DB.machines||[]).filter(m=>
+    (m.serialNo||'').toLowerCase().includes(q) || (m.model||'').toLowerCase().includes(q)
+  ).slice(0, 6);
+  return { hospitals, machines };
+}
+function renderSearchResults(query){
+  const box = document.getElementById('search-results');
+  if(!box) return;
+  const q = query.trim();
+  if(q.length < 2){ box.innerHTML = '<div class="search-empty">Type at least 2 characters\u2026</div>'; return; }
+  const { hospitals, machines } = searchRecords(q);
+  if(hospitals.length===0 && machines.length===0){
+    box.innerHTML = '<div class="search-empty">No matches for \u201c'+escapeHtml(q)+'\u201d</div>';
+    return;
+  }
+  let html = '';
+  if(hospitals.length){
+    html += '<div class="search-result-group-label">Hospitals</div>';
+    html += hospitals.map(h=>{
+      const d = DB.districts.find(x=>x.id===h.districtId);
+      const sub = [d?d.name:'', h.address?h.address.slice(0,50):''].filter(Boolean).join(' \u00b7 ');
+      return '<div class="search-result-item" data-search-nav="#/hospital/'+encodeURIComponent(h.id)+'">'
+        + '<div class="search-result-title">'+escapeHtml(h.name)+'</div>'
+        + (sub ? '<div class="search-result-sub">'+escapeHtml(sub)+'</div>' : '')
+        + '</div>';
+    }).join('');
+  }
+  if(machines.length){
+    html += '<div class="search-result-group-label">Machines</div>';
+    html += machines.map(m=>{
+      const h = DB.hospitals.find(x=>x.id===m.hospitalId);
+      const sub = [m.category, h?h.name:''].filter(Boolean).join(' \u00b7 ');
+      return '<div class="search-result-item" data-search-nav="#/machine/'+encodeURIComponent(m.id)+'">'
+        + '<div class="search-result-title">'+escapeHtml(m.model||m.category)+(m.serialNo?' &middot; '+escapeHtml(m.serialNo):'')+'</div>'
+        + (sub ? '<div class="search-result-sub">'+escapeHtml(sub)+'</div>' : '')
+        + '</div>';
+    }).join('');
+  }
+  box.innerHTML = html;
+  box.querySelectorAll('[data-search-nav]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      location.hash = el.dataset.searchNav;
+      closeSearchPanel();
+    });
+  });
+}
+document.addEventListener('click', (e)=>{
+  const wrap = document.getElementById('search-wrap');
+  if(wrap && !wrap.contains(e.target)) closeSearchPanel();
+});
 
 function renderFooter(){
   document.getElementById('footer-root').innerHTML =
@@ -609,8 +721,10 @@ document.getElementById('preview-close').addEventListener('click', closePreviewM
 document.getElementById('preview-overlay').addEventListener('click', (e)=>{ if(e.target.id==='preview-overlay') closePreviewModal(); });
 document.addEventListener('keydown', (e)=>{
   if(e.key !== 'Escape') return;
+  const searchPanel = document.getElementById('search-panel');
   if(document.getElementById('preview-overlay').style.display === 'flex') closePreviewModal();
   else if(document.getElementById('modal-overlay').style.display === 'flex') closeModal();
+  else if(searchPanel && searchPanel.style.display === 'block') closeSearchPanel();
 });
 
 /* ============================================================
@@ -642,10 +756,13 @@ function renderRoute(){
 /* ============================================================
    Alerts
    ============================================================ */
+const ALERT_CUTOFF_DATE = '2026-04-01'; // fixed: ignore anything expiring before start of FY 2026-27 (cleans out legacy import dates)
+
 function computeActiveAlerts(){
   const alerts = [];
   DB.machines.forEach(m=>{
     if(!m.amcExpiryDate) return;
+    if(m.amcExpiryDate < ALERT_CUTOFF_DATE) return;
     const d = daysUntil(m.amcExpiryDate);
     if(d === null || d > AMC_ALERT_DAYS) return;
     const key = 'machine-amc:'+m.id+':'+m.amcExpiryDate;
@@ -661,6 +778,7 @@ function computeActiveAlerts(){
   DB.hospitals.forEach(h=>{
     const c = DB.hospitalContracts[h.id];
     if(!c || !c.endDate) return;
+    if(c.endDate < ALERT_CUTOFF_DATE) return;
     const d = daysUntil(c.endDate);
     if(d === null || d > CONTRACT_ALERT_DAYS) return;
     const key = 'contract:'+h.id+':'+c.endDate;
@@ -676,18 +794,51 @@ function computeActiveAlerts(){
   return alerts;
 }
 
+let alertCarouselAlerts = [];
+let alertCarouselIndex = 0;
+
 function renderAlertsHtml(){
-  const alerts = computeActiveAlerts();
-  if(!alerts.length) return '';
-  const items = alerts.map(a=>
-    '<div class="alert-item">'
+  alertCarouselAlerts = computeActiveAlerts();
+  alertCarouselIndex = 0;
+  if(!alertCarouselAlerts.length) return '';
+  return '<div class="alert-carousel" id="alert-carousel">'
+    + (alertCarouselAlerts.length>1 ? '<button class="alert-nav-btn alert-nav-prev" id="alert-prev-btn" aria-label="Previous alert"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M15 18l-6-6 6-6" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>' : '')
+    + '<div class="alert-carousel-viewport" id="alert-carousel-card"></div>'
+    + (alertCarouselAlerts.length>1 ? '<button class="alert-nav-btn alert-nav-next" id="alert-next-btn" aria-label="Next alert"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>' : '')
+    + (alertCarouselAlerts.length>1 ? '<div class="alert-carousel-counter" id="alert-carousel-counter"></div>' : '')
+    + '</div>';
+}
+
+function renderAlertCarouselCard(){
+  const card = document.getElementById('alert-carousel-card');
+  if(!card) return;
+  const a = alertCarouselAlerts[alertCarouselIndex];
+  if(!a){ return; }
+  card.innerHTML = '<div class="alert-item">'
     + '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 9v4M12 17h.01M10.3 3.9L2.5 17a1.5 1.5 0 0 0 1.3 2.3h16.4a1.5 1.5 0 0 0 1.3-2.3L13.7 3.9a1.5 1.5 0 0 0-2.6 0z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
     + '<div class="alert-item-body"><div class="alert-item-title">'+escapeHtml(a.title)+'</div>'
     + '<div class="alert-item-message">'+(a.link ? '<a href="'+a.link+'">'+a.message+'</a>' : a.message)+'</div></div>'
     + (isAdmin() ? '<button class="alert-dismiss" data-dismiss-alert="'+escapeHtml(a.key)+'" title="Dismiss">&times;</button>' : '')
-    + '</div>'
-  ).join('');
-  return '<div class="alert-stack">'+items+'</div>';
+    + '</div>';
+  const counter = document.getElementById('alert-carousel-counter');
+  if(counter) counter.textContent = (alertCarouselIndex+1)+' / '+alertCarouselAlerts.length;
+  wireAlertDismissButtons();
+}
+
+function wireAlertCarousel(){
+  const carousel = document.getElementById('alert-carousel');
+  if(!carousel) return;
+  renderAlertCarouselCard();
+  const prevBtn = document.getElementById('alert-prev-btn');
+  const nextBtn = document.getElementById('alert-next-btn');
+  if(prevBtn) prevBtn.addEventListener('click', ()=>{
+    alertCarouselIndex = (alertCarouselIndex - 1 + alertCarouselAlerts.length) % alertCarouselAlerts.length;
+    renderAlertCarouselCard();
+  });
+  if(nextBtn) nextBtn.addEventListener('click', ()=>{
+    alertCarouselIndex = (alertCarouselIndex + 1) % alertCarouselAlerts.length;
+    renderAlertCarouselCard();
+  });
 }
 
 function wireAlertDismissButtons(){
@@ -752,7 +903,7 @@ function renderHomePage(){
   document.querySelectorAll('.station-card[data-module-link]').forEach(card=>{
     card.addEventListener('click', (e)=>{ if(e.target.closest('a,button')) return; location.hash = card.dataset.moduleLink; });
   });
-  wireAlertDismissButtons();
+  wireAlertCarousel();
 
   const addBannerBtn = document.getElementById('add-banner-btn');
   if(addBannerBtn) addBannerBtn.addEventListener('click', ()=>openBannerUploadModal());
