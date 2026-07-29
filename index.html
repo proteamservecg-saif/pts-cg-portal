@@ -335,6 +335,7 @@ function emptyDb() {
     districts: [], hospitals: [], hospitalContracts: {}, machines: [], machineDocuments: [],
     staff: [], scheduleEntries: [], announcements: [],
     parts: [], consumptionLog: [],
+    calibrationYears: [], calibrationDocuments: [],
     dismissedAlerts: [], homepageBanner: null
   };
 }
@@ -347,6 +348,7 @@ const SCHEDULE_STATUSES = ["Scheduled","Completed","Cancelled"];
 const MACHINE_DOC_EXTENSIONS = ["pdf","jpg","jpeg","png"];
 const CONTRACT_DOC_EXTENSIONS = ["pdf","jpg","jpeg","png"];
 const ANNOUNCEMENT_ATTACHMENT_EXTENSIONS = ["pdf","jpg","jpeg","png"];
+const CALIBRATION_DOC_EXTENSIONS = ["pdf","jpg","jpeg","png"];
 const TEAM_PHOTO_EXTENSIONS = ["jpg","jpeg","png"];
 const BANNER_EXTENSIONS = ["jpg","jpeg","png"];
 const AMC_ALERT_DAYS = 60;       // machine AMC/warranty expiry alert window (days)
@@ -529,6 +531,8 @@ async function loadDb(){
   DB.announcements = DB.announcements || [];
   DB.parts = DB.parts || [];
   DB.consumptionLog = DB.consumptionLog || [];
+  DB.calibrationYears = DB.calibrationYears || [];
+  DB.calibrationDocuments = DB.calibrationDocuments || [];
   DB.dismissedAlerts = DB.dismissedAlerts || [];
   DB.homepageBanner = DB.homepageBanner || null;
 }
@@ -776,12 +780,15 @@ function renderRoute(){
   const districtMatch = hash.match(/^#\/district\/(.+)$/);
   const hospitalMatch = hash.match(/^#\/hospital\/(.+)$/);
   const machineMatch = hash.match(/^#\/machine\/(.+)$/);
+  const calibYearMatch = hash.match(/^#\/calibration-year\/(.+)$/);
   if(hash === '#/machine-records') renderDistrictsPage();
   else if(districtMatch) renderHospitalsPage(decodeURIComponent(districtMatch[1]));
   else if(hospitalMatch) renderHospitalDetailPage(decodeURIComponent(hospitalMatch[1]));
   else if(machineMatch) renderMachineDetailPage(decodeURIComponent(machineMatch[1]));
   else if(hash === '#/team') renderTeamPage();
   else if(hash === '#/schedule') renderSchedulePage();
+  else if(hash === '#/calibration') renderCalibrationYearsPage();
+  else if(calibYearMatch) renderCalibrationYearDetailPage(decodeURIComponent(calibYearMatch[1]));
   else if(hash === '#/announcements') renderAnnouncementsPage();
   else if(hash === '#/inventory') renderInventoryPage();
   else renderHomePage();
@@ -923,6 +930,7 @@ function renderHomePage(){
   const machineCount = DB.machines.length;
   const teamCount = DB.staff.length;
   const scheduleCount = DB.scheduleEntries.length;
+  const calibrationYearCount = DB.calibrationYears.length;
   const announcementCount = DB.announcements.length;
   const partCount = DB.parts.length;
 
@@ -953,6 +961,10 @@ function renderHomePage(){
     + '<div class="station-card" data-module-link="#/schedule"><div class="station-tag">SERVICE SCHEDULE</div><h3>Service Schedule</h3>'
     + '<div class="station-meta"><span>'+scheduleCount+' visit'+(scheduleCount===1?'':'s')+' logged</span></div>'
     + '<div class="station-card-footer"><a href="#/schedule" class="btn btn-station-open btn-sm">Open schedule &rarr;</a></div></div>'
+
+    + '<div class="station-card" data-module-link="#/calibration"><div class="station-tag">CALIBRATION RECORDS</div><h3>Calibration Records</h3>'
+    + '<div class="station-meta"><span>'+calibrationYearCount+' year'+(calibrationYearCount===1?'':'s')+' on file</span></div>'
+    + '<div class="station-card-footer"><a href="#/calibration" class="btn btn-station-open btn-sm">Open records &rarr;</a></div></div>'
 
     + '<div class="station-card" data-module-link="#/announcements"><div class="station-tag">ANNOUNCEMENTS</div><h3>Announcements</h3>'
     + '<div class="station-meta"><span>'+announcementCount+' post'+(announcementCount===1?'':'s')+'</span></div>'
@@ -1994,6 +2006,184 @@ async function deleteAnnouncement(id){
     renderAnnouncementsPage();
   } catch(e){ toast(e.message, 'error'); }
 }
+/* ============================================================
+   CALIBRATION RECORDS — standalone yearly document archive
+   ============================================================ */
+function generateYearOptions(){
+  // Rolling range: 5 years back to 10 years forward from the current calendar year,
+  // formatted strictly as YYYY-YY (e.g. 2026-27).
+  const currentYear = new Date().getFullYear();
+  const options = [];
+  for(let y = currentYear - 5; y <= currentYear + 10; y++){
+    options.push(y + '-' + String((y + 1) % 100).padStart(2, '0'));
+  }
+  return options;
+}
+function yearSortKey(label){
+  const m = String(label||'').match(/^(\d{4})-\d{2}$/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+function renderCalibrationYearsPage(){
+  const app = document.getElementById('app');
+  const admin = isAdmin();
+  const years = [...DB.calibrationYears].sort((a,b)=>yearSortKey(b.label)-yearSortKey(a.label));
+
+  const cards = years.map((y,i)=>{
+    const count = DB.calibrationDocuments.filter(d=>d.yearId===y.id).length;
+    return '<div class="station-card" data-station-link="#/calibration-year/'+encodeURIComponent(y.id)+'" style="--delay:'+Math.min(i*40,320)+'ms;">'
+      + '<div class="station-tag">CALIBRATION YEAR</div>'
+      + '<a href="#/calibration-year/'+encodeURIComponent(y.id)+'"><h3>'+escapeHtml(y.label)+'</h3></a>'
+      + '<div class="station-meta"><span>'+count+' document'+(count===1?'':'s')+'</span></div>'
+      + '<div class="station-card-footer">'
+      + '<a href="#/calibration-year/'+encodeURIComponent(y.id)+'" class="btn btn-station-open btn-sm">Open year &rarr;</a>'
+      + (admin ? '<div class="card-actions"><button class="btn btn-danger btn-sm" data-delete-year="'+y.id+'">Delete</button></div>' : '')
+      + '</div></div>';
+  }).join('');
+
+  app.innerHTML =
+    '<div class="breadcrumb"><a href="#/">Home</a><span class="sep">/</span><span class="current">Calibration Records</span></div>'
+    + '<div class="page-eyebrow">Pro Team Serve</div>'
+    + '<div class="page-header"><div><h1>Calibration Records</h1>'
+    + '<div class="page-subtitle">Yearly calibration certificate archive, not tied to a specific hospital or machine.</div></div></div>'
+    + '<div class="station-grid">'
+    + (years.length===0 ? '<div class="empty-state" style="grid-column:1/-1;"><h3>No calibration years yet</h3><p>'+(admin?'Add a year below to start filing records.':'Check back once an administrator has added a year.')+'</p></div>' : cards)
+    + (admin ? '<button class="add-inline-card" id="add-year-btn">+ Add Year</button>' : '')
+    + '</div>';
+
+  document.querySelectorAll('.station-card[data-station-link]').forEach(card=>{
+    card.addEventListener('click', (e)=>{ if(e.target.closest('a,button')) return; location.hash = card.dataset.stationLink; });
+  });
+  const addBtn = document.getElementById('add-year-btn');
+  if(addBtn) addBtn.addEventListener('click', openAddYearModal);
+  document.querySelectorAll('[data-delete-year]').forEach(btn=>btn.addEventListener('click',()=>deleteCalibrationYear(btn.dataset.deleteYear)));
+}
+
+function openAddYearModal(){
+  const existingLabels = new Set(DB.calibrationYears.map(y=>y.label));
+  const available = generateYearOptions().filter(y=>!existingLabels.has(y));
+  if(available.length===0){ toast('All years in the available range have already been added.', 'error'); return; }
+  openModal(
+    'Add Year',
+    '<div id="modal-form-error"></div>'
+    + '<div class="field"><label>Financial year</label><select id="add-year-select">'+available.map(y=>'<option value="'+y+'">'+y+'</option>').join('')+'</select></div>',
+    '<button class="btn btn-outline" id="modal-cancel-btn">Cancel</button><button class="btn btn-primary" id="modal-save-btn">Add</button>'
+  );
+  document.getElementById('modal-cancel-btn').addEventListener('click', closeModal);
+  document.getElementById('modal-save-btn').addEventListener('click', async ()=>{
+    const label = document.getElementById('add-year-select').value;
+    const saveBtn = document.getElementById('modal-save-btn');
+    const errBox = document.getElementById('modal-form-error');
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving\u2026';
+    try {
+      DB.calibrationYears.push({ id: nextId('calyr'), label, createdAt: new Date().toISOString() });
+      await saveDb();
+      closeModal();
+      toast('Year added.', 'success');
+      renderCalibrationYearsPage();
+    } catch(e){ errBox.innerHTML = '<div class="form-error">'+escapeHtml(e.message)+'</div>'; saveBtn.disabled=false; saveBtn.textContent='Add'; }
+  });
+}
+
+async function deleteCalibrationYear(id){
+  const docCount = DB.calibrationDocuments.filter(d=>d.yearId===id).length;
+  if(docCount>0){ toast('This year still has '+docCount+' document'+(docCount===1?'':'s')+'. Open it and delete all records first, then delete the year.', 'error'); return; }
+  if(!confirm('Delete this calibration year?')) return;
+  try {
+    DB.calibrationYears = DB.calibrationYears.filter(y=>y.id!==id);
+    await saveDb();
+    toast('Year deleted.', 'success');
+    renderCalibrationYearsPage();
+  } catch(e){ toast(e.message, 'error'); }
+}
+
+function renderCalibrationYearDetailPage(yearId){
+  const app = document.getElementById('app');
+  const year = DB.calibrationYears.find(y=>y.id===yearId);
+  if(!year){ app.innerHTML = '<div class="empty-state"><h3>Year not found</h3><p><a href="#/calibration">Back to Calibration Records</a></p></div>'; return; }
+  const admin = isAdmin();
+  const docs = DB.calibrationDocuments.filter(d=>d.yearId===yearId).sort((a,b)=>(b.uploadedAt||'').localeCompare(a.uploadedAt||''));
+
+  const cards = docs.map(d=>
+    '<div class="drawing-card"><div class="drawing-icon">'+(getExtension(d.originalName)||'FILE').slice(0,4).toUpperCase()+'</div>'
+    + '<div class="drawing-title">'+escapeHtml(d.title)+'</div>'
+    + '<div class="drawing-sub">Uploaded '+formatDate(d.uploadedAt)+' &middot; '+((d.sizeBytes||0)/1024).toFixed(0)+' KB</div>'
+    + '<div class="drawing-card-footer"><div style="display:flex; gap:6px;">'
+    + '<button class="btn btn-outline btn-sm" data-caldoc-view="'+d.id+'">View</button>'
+    + '<a class="btn btn-outline btn-sm" href="'+driveDownloadUrl(d.fileId)+'" target="_blank" rel="noopener">Download</a></div>'
+    + (admin ? '<button class="btn btn-danger btn-sm" data-caldoc-delete="'+d.id+'">Delete</button>' : '')
+    + '</div></div>'
+  ).join('');
+
+  app.innerHTML =
+    '<div class="breadcrumb"><a href="#/">Home</a><span class="sep">/</span><a href="#/calibration">Calibration Records</a><span class="sep">/</span><span class="current">'+escapeHtml(year.label)+'</span></div>'
+    + '<div class="page-eyebrow">Calibration Year</div>'
+    + '<div class="page-header"><div><h1>'+escapeHtml(year.label)+'</h1>'
+    + '<div class="page-subtitle">Calibration certificates filed for this year.</div></div>'
+    + (admin ? '<button class="btn btn-primary btn-sm" id="add-caldoc-btn">+ Upload document</button>' : '')
+    + '</div>'
+    + '<div class="drawing-list">'
+    + (docs.length===0 ? '<div class="empty-state" style="grid-column:1/-1;"><h3>No documents uploaded yet</h3><p>'+(admin?'Upload the first calibration certificate above.':'No documents have been attached yet.')+'</p></div>' : cards)
+    + '</div>';
+
+  const addBtn = document.getElementById('add-caldoc-btn');
+  if(addBtn) addBtn.addEventListener('click', ()=>openCalibrationDocUploadModal(yearId));
+  document.querySelectorAll('[data-caldoc-view]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const d = docs.find(x=>x.id===btn.dataset.caldocView);
+      const ext = getExtension(d.originalName||'');
+      if(['jpg','jpeg','png'].includes(ext)) openPreviewModal({ kind:'drive-image', url:driveViewUrl(d.fileId), title:d.title });
+      else if(ext==='pdf') openPreviewModal({ kind:'drive-pdf', previewUrl:drivePdfPreviewUrl(d.fileId), title:d.title });
+      else openPreviewModal({ kind:'other', downloadUrl:driveDownloadUrl(d.fileId), title:d.title });
+    });
+  });
+  document.querySelectorAll('[data-caldoc-delete]').forEach(btn=>btn.addEventListener('click',()=>deleteCalibrationDoc(btn.dataset.caldocDelete, yearId)));
+}
+
+function openCalibrationDocUploadModal(yearId){
+  openModal(
+    'Upload Calibration Document',
+    '<div id="modal-form-error"></div>'
+    + '<div class="field"><label>Title</label><input type="text" id="caldoc-title-input" placeholder="e.g. CT Calibration \u2014 City Hospital Raipur \u2014 March 2026"></div>'
+    + '<div class="field"><label>File (PDF, JPG, JPEG, PNG)</label><input type="file" id="caldoc-file-input" accept=".pdf,.jpg,.jpeg,.png"></div>',
+    '<button class="btn btn-outline" id="modal-cancel-btn">Cancel</button><button class="btn btn-primary" id="modal-save-btn">Upload</button>'
+  );
+  document.getElementById('modal-cancel-btn').addEventListener('click', closeModal);
+  document.getElementById('modal-save-btn').addEventListener('click', async ()=>{
+    const title = document.getElementById('caldoc-title-input').value.trim();
+    const fileInput = document.getElementById('caldoc-file-input');
+    const errBox = document.getElementById('modal-form-error');
+    if(!title){ errBox.innerHTML = '<div class="form-error">Please enter a title.</div>'; return; }
+    if(!fileInput.files.length){ errBox.innerHTML = '<div class="form-error">Please choose a file.</div>'; return; }
+    const file = fileInput.files[0];
+    const ext = getExtension(file.name);
+    if(!CALIBRATION_DOC_EXTENSIONS.includes(ext)){ errBox.innerHTML = '<div class="form-error">File must be PDF, JPG, JPEG, or PNG.</div>'; return; }
+    const saveBtn = document.getElementById('modal-save-btn');
+    saveBtn.disabled = true; saveBtn.textContent = 'Uploading\u2026';
+    try {
+      const fileId = await driveUploadBinary(file, CONFIG.UPLOADS_FOLDER_ID);
+      await driveSetPublicReadable(fileId);
+      DB.calibrationDocuments.push({ id: nextId('caldoc'), yearId, title, fileId, originalName: file.name, sizeBytes: file.size, uploadedAt: new Date().toISOString(), uploadedBy: currentUserEmail||'admin' });
+      await saveDb();
+      closeModal();
+      toast('Document uploaded.', 'success');
+      renderCalibrationYearDetailPage(yearId);
+    } catch(e){ errBox.innerHTML = '<div class="form-error">'+escapeHtml(e.message)+'</div>'; saveBtn.disabled=false; saveBtn.textContent='Upload'; }
+  });
+}
+
+async function deleteCalibrationDoc(id, yearId){
+  if(!confirm('Delete this document?')) return;
+  const rec = DB.calibrationDocuments.find(d=>d.id===id);
+  try {
+    DB.calibrationDocuments = DB.calibrationDocuments.filter(d=>d.id!==id);
+    await saveDb();
+    if(rec && rec.fileId) driveDeleteFile(rec.fileId);
+    toast('Document deleted.', 'success');
+    renderCalibrationYearDetailPage(yearId);
+  } catch(e){ toast(e.message, 'error'); }
+}
+
 
 /* ---- Service report (PDF, one per visit) ---- */
 function loadImageAsDataUrl(file){
